@@ -133,7 +133,8 @@ npm run dev
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `VITE_API_URL` | Yes (production) | Backend API URL (e.g. `https://api.crm-core.com`) |
+| `VITE_API_URL` | Yes (production) | Backend API URL (e.g. `https://your-backend.up.railway.app/api/v1`) |
+| `VITE_API_PROXY_TARGET` | No (local dev) | Backend URL for Vite proxy (e.g. `http://localhost:8000`) |
 
 ## Deployment
 
@@ -160,6 +161,8 @@ npm run dev
 3. Set root directory to `backend/`
 4. Add environment variables from the table above
 5. Railway auto-detects the Dockerfile
+6. If using Neon, set `DATABASE_URL` with `sslmode=require`
+7. If using Upstash, set `REDIS_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND` to the Upstash Redis connection string
 
 **Service 2 — Celery Worker:**
 
@@ -178,34 +181,24 @@ npm run dev
 1. Import your GitHub repository
 2. Set root directory to `frontend/`
 3. Framework preset: **Vite**
-4. Environment variable: `VITE_API_URL` = your Railway API URL
-5. Deploy
+4. Set `VITE_API_URL` to your Railway backend URL, for example `https://your-backend.up.railway.app/api/v1`
+5. Leave `VITE_API_PROXY_TARGET` unset in production
 
-### Live URLs (example)
+### 5. Production URLs
 
-| Service | URL |
-|---------|-----|
-| Frontend | `https://crm-core.vercel.app` |
-| Backend API | `https://crm-core-api.railway.app` |
-| Health Check | `https://crm-core-api.railway.app/health` |
-| API Docs | `https://crm-core-api.railway.app/docs` |
+- Frontend: `https://<project>.vercel.app`
+- Backend: `https://<project>.up.railway.app`
+- Health: `https://<project>.up.railway.app/health`
+- Docs: `https://<project>.up.railway.app/docs`
 
-### Verify Deployment
+### 6. Verification Checklist
 
-After deployment, verify:
-
-- **Login** — `POST /api/v1/auth/login` with `admin@123.com` / `pass123`
-- **JWT** — Token returned and accepted by protected endpoints
-- **RBAC** — Admin can access `/api/v1/users`; sales_rep gets 403
-- **Create Lead** — `POST /api/v1/leads` returns 201
-- **Edit Lead** — `PATCH /api/v1/leads/{id}` updates status
-- **Delete Lead** — `DELETE /api/v1/leads/{id}` returns 204
-- **Bulk CSV** — `POST /api/v1/leads/bulk-ingest` imports records
-- **Dashboard** — KPI cards show lead counts
-- **Search** — Debounced search filters results
-- **Redis Queue** — Celery tasks enqueue on lead creation
-- **Celery Worker** — Follow-up tasks execute after 24h
-- **PostgreSQL** — All data persisted
+- Login: needs valid seeded or registered user
+- Dashboard: loads after authentication
+- CRUD: backend endpoints remain unchanged
+- Redis/Celery: depends on Upstash and Railway worker credentials
+- PostgreSQL: depends on Neon `DATABASE_URL`
+- Email/WhatsApp: skipped unless SendGrid and WhatsApp credentials are provided
 
 ## Local Development (without Docker)
 

@@ -67,16 +67,24 @@ export interface LeadStats {
 }
 
 export async function fetchLeadStats(signal?: AbortSignal): Promise<LeadStats> {
-  const statuses = ['new', 'contacted', 'qualified', 'proposal', 'won', 'lost']
+  const statuses = ['new', 'contacted', 'qualified', 'proposal', 'won', 'lost'] as const
   const totalRes = await client.get('/leads', { params: { page: 1, page_size: 1 }, signal })
-  const counts: Record<string, number> = { total: totalRes.data.total }
+  const counts: LeadStats = {
+    total: totalRes.data.total,
+    new: 0,
+    contacted: 0,
+    qualified: 0,
+    proposal: 0,
+    won: 0,
+    lost: 0,
+  }
   const results = await Promise.all(
     statuses.map((s) => client.get('/leads', { params: { page: 1, page_size: 1, status: s }, signal })),
   )
   statuses.forEach((s, i) => {
     counts[s] = results[i]!.data.total
   })
-  return counts as LeadStats
+  return counts
 }
 
 export async function fetchLead(id: string): Promise<Lead> {
