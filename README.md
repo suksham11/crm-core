@@ -1,18 +1,38 @@
 # CRM Core
 
-A production-ready CRM system with lead intake, deduplication, automated follow-up queues, and role-based access control.
+A production-ready CRM system with lead intake, deduplication, automated follow-up queues, stage-change notifications, and role-based access control.
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| Lead CRUD | Create, read, update, delete leads with normalized email/phone |
+| Deduplication | Composite unique constraint on `(email, phone)` + upsert logic |
+| JWT Authentication | Bearer token with configurable expiry |
+| Role-Based Access Control | Admin, Manager, Sales Rep roles enforced via dependencies |
+| 24h Follow-up | Celery task scheduled at lead creation, checks if still "New" after 24h |
+| Stage-Change Notification | Celery task fired on every status transition |
+| Email Notifications | Via SendGrid API (falls back gracefully if unconfigured) |
+| WhatsApp Notifications | Via WhatsApp Cloud API (falls back gracefully if unconfigured) |
+| Bulk CSV Ingestion | Batch insert (500/batch) with `ON CONFLICT DO NOTHING` |
+| Bulk Status Update | Update multiple leads' status in one request |
+| Pagination & Search | Server-side paginated list with ILIKE search across name/email/phone |
+| Audit Logging | Every create, update, delete, and status change is logged |
+| Virtualized Table | 50k+ row rendering with TanStack Virtual |
+| Optimistic UI | Inline status drawer with rollback on error |
 
 ## Tech Stack
 
-| Layer          | Technology                     |
-| -------------- | ------------------------------ |
-| Frontend       | React 18 + Vite + Tailwind CSS |
-| Backend        | FastAPI (Python 3.12)          |
-| Database       | PostgreSQL 16                  |
-| ORM            | SQLAlchemy 2.0                 |
-| Auth           | JWT (python-jose)              |
-| Queue          | Celery + Redis                 |
-| Virtualization | TanStack Virtual               |
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18 + Vite + Tailwind CSS |
+| Backend | FastAPI (Python 3.12) |
+| Database | PostgreSQL 16 |
+| ORM | SQLAlchemy 2.0 |
+| Auth | JWT (python-jose + bcrypt) |
+| Queue | Celery 5.4 + Redis 7 |
+| Notifications | SendGrid (email) + WhatsApp Cloud API |
+| Containerization | Docker + Docker Compose |
 
 ## Architecture Overview
 
@@ -21,9 +41,12 @@ Client (React SPA) ──HTTP──> FastAPI ──SQL──> PostgreSQL
                                  │
                                  ├── JWT Auth (Middleware)
                                  │
-                                 └── Celery Worker ──> Redis (Broker)
-                                        │
-                                        └── SendGrid / WhatsApp API
+                                 ├── Celery Worker ──> Redis (Broker/Backend)
+                                 │       │
+                                 │       ├── notify_follow_up_24h (24h countdown)
+                                 │       └── notify_stage_change (on status update)
+                                 │
+                                 └── SendGrid / WhatsApp API
 ```
 
 ## Project Structure
@@ -33,15 +56,14 @@ crm-core/
 ├── backend/
 │   ├── app/
 │   │   ├── api/v1/          # Route handlers (leads, auth, users)
-│   │   ├── core/            # Security, RBAC
-│   │   ├── models/          # SQLAlchemy models
+│   │   ├── core/            # Security, RBAC utilities
+│   │   ├── models/          # SQLAlchemy models (Lead, User, Deal, Task, AuditLog)
 │   │   ├── schemas/         # Pydantic request/response schemas
-│   │   ├── services/        # Business logic (lead, auth, CSV, notification)
-│   │   ├── workers/         # Celery app + tasks
-│   │   ├── utils/           # Normalizers, validators
+│   │   ├── services/        # Business logic (lead, CSV, notification)
+│   │   ├── workers/         # Celery app + background tasks
 │   │   ├── config.py        # Settings via pydantic-settings
 │   │   ├── database.py      # Engine, session, Base
-│   │   └── main.py          # FastAPI app entry
+│   │   └── main.py          # FastAPI app entry + lifespan
 │   ├── Dockerfile
 │   ├── Dockerfile.celery
 │   └── requirements.txt
@@ -49,7 +71,7 @@ crm-core/
 │   ├── src/
 │   │   ├── api/             # Axios client + endpoint wrappers
 │   │   ├── components/      # VirtualizedTable, LeadDrawer, SearchBar, etc.
-│   │   ├── contexts/        # AuthContext
+│   │   ├── contexts/        # AuthContext, ToastContext
 │   │   ├── hooks/           # useDebounce
 │   │   ├── pages/           # Login, Dashboard, Leads, Users
 │   │   ├── App.tsx          # Router with protected routes
@@ -60,16 +82,39 @@ crm-core/
 └── docs/
     ├── architecture.md
     ├── er_diagram.md
-    └── api.md
+    ├── api.md
+    └── deep_dives.md
 ```
 
-## Quick Start
+## Setup
 
 ### Prerequisites
 
-- Docker & Docker Compose
-- Node.js 20+ (for local frontend dev)
-- Python 3.12+ (for local backend dev)
+- Docker & Docker Compose (recommended)
+- Node.js 20+ (local frontend dev)
+- Python 3.12+ (local backend dev)
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | `postgresql://crm_user:crm_pass@localhost:5432/crm_core` | PostgreSQL connection string |
+| `REDIS_URL` | Yes | `redis://localhost:6379/0` | Redis connection string |
+| `CELERY_BROKER_URL` | Yes | `redis://localhost:6379/0` | Redis URL for Celery broker |
+| `CELERY_RESULT_BACKEND` | Yes | `redis://localhost:6379/0` | Redis URL for Celery results |
+| `SECRET_KEY` | Yes | `change-this-to-a-random-secret-key-in-production` | JWT signing key |
+| `ALGORITHM` | No | `HS256` | JWT algorithm |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | No | `30` | JWT expiry in minutes |
+| `ENVIRONMENT` | No | `development` | `development` or `production` |
+| `CORS_ORIGINS` | No | `http://localhost:5173,http://localhost:3000` | Comma-separated allowed origins |
+| `BOOTSTRAP_ADMIN_EMAIL` | No | — | Auto-create admin user on first run |
+| `BOOTSTRAP_ADMIN_PASSWORD` | No | — | Admin password |
+| `BOOTSTRAP_ADMIN_FULL_NAME` | No | `CRM Admin` | Admin display name |
+| `BOOTSTRAP_ADMIN_ROLE` | No | `admin` | Admin role |
+| `SENDGRID_API_KEY` | No | — | SendGrid API key for email |
+| `FROM_EMAIL` | No | `noreply@crm-core.local` | Sender email address |
+| `WHATSAPP_API_KEY` | No | — | WhatsApp Cloud API token |
+| `WHATSAPP_PHONE_NUMBER_ID` | No | — | WhatsApp phone number ID |
 
 ### Run with Docker (recommended)
 
@@ -87,12 +132,10 @@ docker compose up --build
 
 ```bash
 cd backend
-cp .env.example .env
+copy .env.example .env
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
-
-If you want a single demo/admin account to be created automatically on first run, set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` in `backend/.env` before starting the API.
 
 **Celery Worker:**
 
@@ -109,223 +152,157 @@ npm install
 npm run dev
 ```
 
-## Environment Variables
-
-### Backend (`backend/.env`)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `REDIS_URL` | Yes | Redis connection string |
-| `CELERY_BROKER_URL` | Yes | Redis URL for Celery broker |
-| `CELERY_RESULT_BACKEND` | Yes | Redis URL for Celery results |
-| `SECRET_KEY` | Yes | Random secret for JWT signing |
-| `ENVIRONMENT` | No | `development` or `production` |
-| `CORS_ORIGINS` | No | Comma-separated allowed origins |
-| `BOOTSTRAP_ADMIN_EMAIL` | No | Auto-create admin on first run |
-| `BOOTSTRAP_ADMIN_PASSWORD` | No | Admin password |
-| `SENDGRID_API_KEY` | No | SendGrid API key |
-| `FROM_EMAIL` | No | Sender email address |
-| `WHATSAPP_API_KEY` | No | WhatsApp Cloud API key |
-| `WHATSAPP_PHONE_NUMBER_ID` | No | WhatsApp phone number ID |
-
-### Frontend
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `VITE_API_URL` | Yes (production) | Backend API URL (e.g. `https://your-backend.up.railway.app/api/v1`) |
-| `VITE_API_PROXY_TARGET` | No (local dev) | Backend URL for Vite proxy (e.g. `http://localhost:8000`) |
-
 ## Deployment
 
-### 1. Database — Neon PostgreSQL
+### Backend — Render
 
-1. Create a free account at [neon.tech](https://neon.tech)
-2. Create a project and copy the connection string
-3. Format: `postgresql://user:password@ep-xxx.us-east-2.aws.neon.tech/crm_core?sslmode=require`
-
-### 2. Redis — Upstash
-
-1. Create a free account at [upstash.com](https://upstash.com)
-2. Create a Redis database
-3. Copy the REST URL for connection
-
-### 3. Backend — Railway
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new)
-
-**Service 1 — API:**
-
-1. Create a new Railway project
+1. Create a new **Web Service** on Render
 2. Connect your GitHub repository
 3. Set root directory to `backend/`
-4. Add environment variables from the table above
-5. Railway auto-detects the Dockerfile
-6. If using Neon, set `DATABASE_URL` with `sslmode=require`
-7. If using Upstash, set `REDIS_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND` to the Upstash Redis connection string
+4. Build command: `pip install -r requirements.txt`
+5. Start command: `uvicorn app.main:app --host 0.0.0.0 --port 10000`
+6. Add environment variables from the table above
+7. Add a **Cron Job** or **Background Worker** for Celery:
+   - Worker command: `celery -A app.workers.celery_app worker --loglevel=info --concurrency=4`
 
-**Service 2 — Celery Worker:**
-
-1. Add another service in the same Railway project
-2. Set root directory to `backend/`
-3. Override start command:
-   ```
-   celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
-   ```
-4. Add the same environment variables
-
-### 4. Frontend — Vercel
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new)
+### Frontend — Vercel
 
 1. Import your GitHub repository
 2. Set root directory to `frontend/`
 3. Framework preset: **Vite**
-4. Set `VITE_API_URL` to your Railway backend URL, for example `https://your-backend.up.railway.app/api/v1`
+4. Environment variable: `VITE_API_URL` = your Render backend URL (e.g. `https://crm-core-backend.onrender.com/api/v1`)
 5. Leave `VITE_API_PROXY_TARGET` unset in production
 
-### 5. Production URLs
+### Database — Neon
 
-- Frontend: `https://<project>.vercel.app`
-- Backend: `https://<project>.up.railway.app`
-- Health: `https://<project>.up.railway.app/health`
-- Docs: `https://<project>.up.railway.app/docs`
+1. Create a PostgreSQL database on Neon
+2. Copy the connection string from Neon dashboard
+3. Set as `DATABASE_URL` in Render environment variables
 
-### 6. Verification Checklist
+### Redis — Upstash
 
-- Login: needs valid seeded or registered user
-- Dashboard: loads after authentication
-- CRUD: backend endpoints remain unchanged
-- Redis/Celery: depends on Upstash and Railway worker credentials
-- PostgreSQL: depends on Neon `DATABASE_URL`
-- Email/WhatsApp: skipped unless SendGrid and WhatsApp credentials are provided
+1. Create a Redis database on Upstash
+2. Copy the connection strings
+3. Set `REDIS_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND` in Render
 
-## Local Development (without Docker)
+### Docker Compose (single-server deployment)
 
 ```bash
-# Backend
-cd backend
-cp .env.example .env
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-
-# Celery (separate terminal)
-celery -A app.workers.celery_app worker --loglevel=info
-
-# Frontend (separate terminal)
-cd frontend
-npm install
-npm run dev
+docker compose -f docker-compose.yml up --build -d
 ```
 
-## Docker Development
+## API Documentation
 
-```bash
-docker compose up --build
+Interactive docs are available at `/docs` when the API is running.
+
+### Auth
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/v1/auth/login` | No | Login, returns JWT |
+| POST | `/api/v1/auth/register` | No | Register new user |
+| GET | `/api/v1/auth/me` | JWT | Get current user |
+
+### Leads
+
+| Method | Endpoint | Auth | Roles | Description |
+|--------|----------|------|-------|-------------|
+| POST | `/api/v1/leads` | JWT | All | Create lead (schedules 24h follow-up) |
+| GET | `/api/v1/leads` | JWT | All | List with pagination, search, filter |
+| GET | `/api/v1/leads/{id}` | JWT | All | Get single lead |
+| PATCH | `/api/v1/leads/{id}` | JWT | All | Update lead (triggers stage-change notification) |
+| DELETE | `/api/v1/leads/{id}` | JWT | Admin, Manager | Hard-delete lead |
+| POST | `/api/v1/leads/bulk-status` | JWT | Admin, Manager | Bulk status update |
+| POST | `/api/v1/leads/bulk-ingest` | JWT | Admin, Manager | CSV file upload |
+
+### Users
+
+| Method | Endpoint | Auth | Roles | Description |
+|--------|----------|------|-------|-------------|
+| GET | `/api/v1/users` | JWT | Admin | List all users |
+| GET | `/api/v1/users/{id}` | JWT | Admin | Get single user |
+| PATCH | `/api/v1/users/{id}` | JWT | Admin | Update user |
+| DELETE | `/api/v1/users/{id}` | JWT | Admin | Delete user |
+
+### Health
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/health` | No | Health check |
+
+## Background Job Workflow
+
+### 24-Hour Follow-Up
+
+```
+1. POST /api/v1/leads → lead created
+2. notify_follow_up_24h.apply_async(countdown=86400) enqueued to Redis
+3. Celery worker picks up the task after 24h
+4. Worker fetches lead from PostgreSQL
+   ├── Lead deleted → skip (return "skipped")
+   ├── Status != "new" → skip (return "skipped")
+   └── Status == "new" → send notification via email/WhatsApp/log
+5. Result stored in Redis result backend
 ```
 
-- Frontend: http://localhost:5173
-- API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+### Stage-Change Notification
 
-## Frontend Features
+```
+1. PATCH /api/v1/leads/{id} with status field
+2. Old status captured before update
+3. notify_stage_change.delay() enqueued to Redis
+4. Celery worker executes immediately
+5. Worker fetches lead from PostgreSQL
+   ├── Lead deleted → skip (return "skipped")
+   └── Lead exists → send notification via email/WhatsApp/log
+6. Result stored in Redis result backend
+```
 
-### Dashboard
-- **KPI Cards** — Real-time summary of lead pipeline: Total, New, Contacted, Qualified, Proposal, Won, Lost
-- Stats fetched via parallel API calls (one per status) using existing endpoints
-- Loading skeleton state while data loads
+## Notification Workflow
 
-### Leads Grid
-- **Virtualized Table** — Smooth rendering of 50k+ rows using TanStack Virtual
-- **Search-as-you-type** — Debounced (300ms) with AbortController to kill stale queries
-- **Status Drawer** — Inline slide-out panel for updating lead status and notes with optimistic UI
-- **Pagination** — Server-side paginated with Previous/Next controls
-- **Loading States** — Skeleton placeholders during data fetch
-- **Empty State** — Context-aware empty state (different message when searching vs no data)
+```
+notify_follow_up_24h / notify_stage_change
+         │
+         ▼
+   _send_notification(lead, subject, body)
+         │
+         ├── lead.email exists? ──Yes──> send_email() via SendGrid
+         │                                   │
+         │                                   ├── API key set → send HTTP request
+         │                                   └── No key → log warning, return False
+         │
+         └── lead.phone exists? ──Yes──> send_whatsapp() via WhatsApp Cloud API
+                                             │
+                                             ├── Credentials set → send HTTP request
+                                             └── No creds → log warning, return False
+         │
+         └── Both failed? → log notification content (no error thrown)
+```
 
-### Lead Management
-- **Add Lead Modal** — Form with all required fields; submits to `POST /api/v1/leads`
-- **Import CSV Modal** — File picker + progress bar; submits to `POST /api/v1/leads/bulk-ingest`
-- Shows import result (record count) on success
+Notification is attempted on email first, then WhatsApp. If both fail (or neither is configured), the notification content is logged at `INFO` level — the task never raises an error for missing credentials.
 
-### Notifications
-- **Toast System** — Slide-in notifications for:
-  - Lead created (success)
-  - Lead updated (success)
-  - Lead import completed (success)
-  - Error messages from API (error)
-- Auto-dismiss after 4 seconds
+## Assumptions
 
-### Access Control
-- **Protected Routes** — Route-level guards check JWT auth state
-- **Role-based rendering** — Admin-only pages (Users) restricted at route level
-- Unauthenticated users redirected to `/login`
+1. **Single-organization**: The system assumes a single tenant. Multi-tenancy requires adding `organization_id` columns and row-level security.
+2. **Synchronous API**: Lead creation and updates are synchronous REST operations. Event-driven architecture (webhooks, event bus) can be added later.
+3. **PostgreSQL-specific features**: `ON CONFLICT` upsert and `INSERT ... ON CONFLICT DO NOTHING` are PostgreSQL-specific. Migration to other databases requires changes.
+4. **UTC timezone**: All timestamps are stored in UTC. Client-side timezone conversion is the frontend's responsibility.
+5. **24-hour fixed window**: Follow-up is scheduled exactly 24 hours after lead creation. Configurable windows require modifying the countdown value.
+6. **Celery worker always running**: Background jobs assume the Celery worker process is running. If the worker is down, tasks queue in Redis and execute when the worker starts.
 
-## Core Features
+## Known Limitations
 
-### 1. Lead Intake API
-
-- `POST /api/v1/leads` — Create lead with automatic phone/email normalization
-- `GET /api/v1/leads` — Paginated, searchable, filterable list
-- `PATCH /api/v1/leads/{id}` — Update lead status/fields
-- `DELETE /api/v1/leads/{id}` — Soft-delete (Manager+)
-
-### 2. Concurrency Dedup
-
-- Unique constraint on `(email, phone)` at DB level
-- Application-level normalization before upsert
-- Handles concurrent requests safely via unique constraint + ON CONFLICT
-
-### 3. Follow-up Queue
-
-- Celery task scheduled on lead creation (24h delay)
-- Graceful handling: if lead is deleted before execution, task cancels itself
-- Retry with exponential backoff
-
-### 4. Bulk CSV Ingestion
-
-- `POST /api/v1/leads/bulk-ingest` — Upload CSV
-- Batch insert (500 rows/batch) using `INSERT ... ON CONFLICT DO NOTHING`
-- Uses pandas-style parsing via csv.DictReader
-
-### 5. Auth & RBAC
-
-- JWT-based authentication
-- Three roles: `admin`, `manager`, `sales_rep`
-- Route-level enforcement via dependency injection
-- Admin: full access; Manager: lead management; Sales Rep: read + own updates
-
-### 6. Integration Middleware
-
-- Async email dispatch via SendGrid
-- Async WhatsApp dispatch via Cloud API
-- Triggered from follow-up tasks on lead stage transitions
-
-## Data Flow
-
-1. Lead enters via API webhook or CSV upload
-2. Email/phone normalized; duplicate check via unique constraint
-3. Lead stored; Celery task enqueued for 24h follow-up
-4. User views leads in virtualized table (50k+ rows)
-5. User updates status via inline drawer with optimistic UI
-6. Celery worker executes follow-up, dispatches notification
-
-## Design Trade-offs
-
-- **Sync API vs Event-driven**: Chose REST for simplicity. Events via webhooks can be added later.
-- **Celery over BullMQ**: Python stack consistency with FastAPI.
-- **Unique constraint over application lock**: Simpler, robust for concurrent writes.
-- **Optimistic updates in frontend**: Better UX; rolls back on error.
-
-## Technical Debt & Resolution
-
-| Debt                             | Resolution                                       |
-| -------------------------------- | ------------------------------------------------ |
-| No database migrations (Alembic) | Run `alembic init` and version control schemas   |
-| No multi-tenancy                 | Add `organization_id` column + filter middleware |
-| No rate limiting                 | Add slowapi or middleware                        |
-| No comprehensive test suite      | Add pytest + vitest                              |
-| No CI/CD pipeline                | Add GitHub Actions workflow                      |
+| Limitation | Impact | Mitigation |
+|------------|--------|------------|
+| No Alembic migrations | Schema changes must be applied manually | Run `alembic init` and version control schemas |
+| No rate limiting | API can be overwhelmed | Add slowapi or nginx rate limiting |
+| No test suite | Regression risk | Add pytest (backend) + vitest (frontend) |
+| No CI/CD pipeline | Manual deployment steps | Add GitHub Actions workflow |
+| Hard-delete for leads | Orphaned follow-up tasks must handle missing leads | Tasks check lead existence before processing |
+| Single Celery queue | All task types share the same queue | Add dedicated queues per task type for production |
+| Synchronous CSV ingest | Large files block the API worker | Process CSV via Celery task for files > 10k rows |
+| `--reload` in docker-compose | Development-only flag | Remove for production deployments |
+| No email/WhatsApp templates | Plain-text notifications only | Add HTML email templates and rich message formats |
 
 ## License
 

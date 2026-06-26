@@ -47,7 +47,7 @@ def bulk_insert_leads(db: Session, leads: list[LeadCreate], batch_size: int = 50
             index_elements=["email", "phone"],
             index_where=Lead.is_active == True,
         )
-        db.execute(stmt)
+        result = db.execute(stmt)
         db.commit()
-        inserted += len(rows)
+        inserted += result.rowcount
     return inserted

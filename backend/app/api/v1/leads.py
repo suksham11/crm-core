@@ -15,7 +15,7 @@ from app.schemas.lead import LeadCreate, LeadUpdate, LeadResponse, LeadListRespo
 from app.api.deps import get_current_user, require_role
 from app.services.lead_service import create_lead, update_lead_status
 from app.services.csv_service import parse_csv, bulk_insert_leads
-from app.workers.tasks import schedule_follow_up
+from app.workers.tasks import notify_follow_up_24h, notify_stage_change
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -34,12 +34,12 @@ def create_lead_endpoint(
     db.commit()
 
     try:
-        schedule_follow_up.delay(str(lead.id))
+        notify_follow_up_24h.apply_async(args=[str(lead.id)], countdown=86400)
     except Exception:
         if settings.environment == "development":
-            logger.warning("Redis/Celery unavailable — follow-up queue skipped for lead %s", lead.id)
+            logger.warning("Redis/Celery unavailable — 24h follow-up skipped for lead %s", lead.id)
         else:
-            logger.exception("Failed to enqueue follow-up for lead %s", lead.id)
+            logger.exception("Failed to enqueue 24h follow-up for lead %s", lead.id)
 
     return lead
 
@@ -107,6 +107,7 @@ def update_lead(
     if not lead:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found")
     update_data = payload.model_dump(exclude_unset=True)
+    old_status = lead.status.value if "status" in update_data else None
     if "status" in update_data:
         lead = update_lead_status(db, lead, LeadStatus(update_data["status"]), current_user)
         del update_data["status"]
@@ -114,6 +115,13 @@ def update_lead(
         setattr(lead, field, value)
     db.commit()
     db.refresh(lead)
+
+    if old_status is not None and old_status != lead.status.value:
+        try:
+            notify_stage_change.delay(str(lead.id), old_status, lead.status.value)
+        except Exception:
+            logger.exception("Failed to enqueue stage-change notification for lead %s", lead.id)
+
     return lead
 
 
